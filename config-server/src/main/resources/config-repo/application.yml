@@ -1,0 +1,80 @@
+# Shared defaults inherited by every service (the file named "application.yml"
+# in a Spring Cloud Config repo applies to all applications). Per-service
+# files (e.g. account-service.yml) override or add to this.
+
+eureka:
+  client:
+    service-url:
+      defaultZone: ${EUREKA_URI:http://localhost:8761/eureka}
+    fetch-registry: true
+    register-with-eureka: true
+  instance:
+    prefer-ip-address: true
+    lease-renewal-interval-in-seconds: 10
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus,metrics,circuitbreakers
+  endpoint:
+    health:
+      show-details: always
+      probes:
+        enabled: true
+  metrics:
+    tags:
+      application: ${spring.application.name}
+    distribution:
+      percentiles-histogram:
+        http:
+          server:
+            requests: true
+  tracing:
+    sampling:
+      probability: 1.0
+  zipkin:
+    tracing:
+      endpoint: ${ZIPKIN_URI:http://localhost:9411/api/v2/spans}
+
+springdoc:
+  swagger-ui:
+    path: /swagger-ui.html
+  api-docs:
+    path: /v3/api-docs
+
+resilience4j:
+  circuitbreaker:
+    configs:
+      default:
+        registerHealthIndicator: true
+        slidingWindowSize: 10
+        minimumNumberOfCalls: 5
+        permittedNumberOfCallsInHalfOpenState: 3
+        waitDurationInOpenState: 10s
+        failureRateThreshold: 50
+        automaticTransitionFromOpenToHalfOpenEnabled: true
+  retry:
+    configs:
+      default:
+        maxAttempts: 3
+        waitDuration: 500ms
+  timelimiter:
+    configs:
+      default:
+        timeoutDuration: 3s
+
+logging:
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] [%X{traceId:-},%X{spanId:-}] %-5level %logger{36} - %msg%n"
+  level:
+    root: INFO
+    com.bankingplatform: DEBUG
+
+security:
+  jwt:
+    secret: ${JWT_SECRET:change-this-super-secret-banking-platform-signing-key-min-256-bits}
+    access-token-expiration-ms: ${JWT_ACCESS_EXP:900000}
+    refresh-token-expiration-ms: ${JWT_REFRESH_EXP:604800000}
+  internal:
+    api-key: ${INTERNAL_API_KEY:change-this-internal-service-key}

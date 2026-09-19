@@ -1,0 +1,47 @@
+server:
+  port: 8086
+
+spring:
+  application:
+    name: loan-service
+  config:
+    import: optional:configserver:${CONFIG_SERVER_URI:http://localhost:8888}
+  cloud:
+    config:
+      fail-fast: false
+      retry:
+        max-attempts: 6
+        initial-interval: 2000
+        multiplier: 1.5
+  datasource:
+    url: jdbc:mysql://${DB_HOST:localhost}:${DB_PORT:3306}/${DB_NAME:loan_db}?createDatabaseIfNotExist=true&useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC
+    username: ${DB_USERNAME:banking_app}
+    password: ${DB_PASSWORD:banking_app_pw}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    open-in-view: false
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    baseline-on-migrate: true
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+
+eureka:
+  client:
+    service-url:
+      defaultZone: ${EUREKA_URI:http://localhost:8761/eureka}
+  instance:
+    prefer-ip-address: true
+
+outbox:
+  poll-interval-ms: 1000
+
+loan:
+  emi:
+    # Daily at 06:00 server time by default — real banks batch EMI
+    # presentment overnight; override via EMI_AUTO_DEBIT_CRON (e.g.
+    # "0 */2 * * * *" for every 2 minutes) to watch it run live in a demo.
+    auto-debit-cron: ${EMI_AUTO_DEBIT_CRON:0 0 6 * * *}

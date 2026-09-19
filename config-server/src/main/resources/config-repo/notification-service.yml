@@ -1,0 +1,15 @@
+# Notification Service-specific overrides on top of the shared application.yml.
+resilience4j:
+  circuitbreaker:
+    instances:
+      userServiceCB:
+        baseConfig: default
+        # A 404 here just means the profile projection hasn't caught up yet
+        # (an expected, transient condition — see UserContactGateway) not a
+        # sign User Service is unhealthy, so it shouldn't count toward
+        # tripping the breaker. Account Service's own userServiceCB (used
+        # for KYC checks) deliberately does NOT ignore this, since a 404
+        # there is a real failure — the two instances share a name but are
+        # configured independently per service.
+        ignoreExceptions:
+          - feign.FeignException$NotFound

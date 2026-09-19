@@ -1,0 +1,22 @@
+# Loan Service-specific overrides on top of the shared application.yml.
+resilience4j:
+  circuitbreaker:
+    instances:
+      userServiceCB:
+        baseConfig: default
+        # Same reasoning as Account Service's userServiceCB: a
+        # KYC_NOT_VERIFIED rejection is a normal business outcome, not a
+        # User Service health signal, and shouldn't count toward tripping
+        # the breaker.
+        ignoreExceptions:
+          - com.bankingplatform.common.exception.BusinessException
+      accountServiceCB:
+        baseConfig: default
+  retry:
+    instances:
+      accountServiceRetry:
+        baseConfig: default
+        retryExceptions:
+          - java.io.IOException
+          - feign.RetryableException
+          - java.util.concurrent.TimeoutException

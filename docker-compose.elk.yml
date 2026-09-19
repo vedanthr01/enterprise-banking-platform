@@ -1,0 +1,150 @@
+# Optional log-aggregation overlay — NOT part of the default `docker compose up`.
+# Elasticsearch's memory footprint (and, on Linux hosts, the vm.max_map_count
+# kernel setting it needs) makes it a poor default for a laptop dev stack, so
+# this stays a separate, opt-in file layered on top of the main one:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.elk.yml up --build -d
+#
+# Every application service keeps logging to stdout exactly as it already
+# does (see logging.pattern.console in config-repo/application.yml) — this
+# overlay's only change to those services is switching their Docker logging
+# driver to GELF, which the Docker daemon captures and forwards to Logstash
+# with zero application-code changes. Logstash forwards to Elasticsearch;
+# Kibana (http://localhost:5601) is the search UI — create an index pattern
+# for "banking-platform-*" on first visit to start browsing.
+#
+# The gelf-address below deliberately points at "localhost", not the
+# "logstash" service name: Docker's logging drivers run in the daemon's own
+# network context, not the container network, so they can't resolve
+# Compose service names the way containers can — publishing Logstash's GELF
+# port to the host and pointing at localhost:12201 is the standard
+# workaround for that gap.
+#
+# This ships text-line log aggregation (search/filter across every
+# service's output in one place) as a genuine baseline. Parsing each line
+# into structured fields (level, logger, traceId, spanId as their own
+# queryable columns) is a natural next step — logstash-logback-encoder is
+# already a dependency of every service for exactly that purpose; wiring a
+# logback-spring.xml to emit JSON instead of the human-readable console
+# pattern (and switching Logstash's input codec to match) is the way to get
+# there — intentionally left as a documented follow-up rather than baked in
+# here, to keep this optional overlay as low-risk as the rest of the stack.
+
+services:
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.13.4
+    environment:
+      discovery.type: single-node
+      xpack.security.enabled: "false"
+      ES_JAVA_OPTS: "-Xms512m -Xmx512m"
+    ports:
+      - "9200:9200"
+    volumes:
+      - elasticsearch-data:/usr/share/elasticsearch/data
+    networks:
+      - banking-net
+
+  logstash:
+    image: docker.elastic.co/logstash/logstash:8.13.4
+    volumes:
+      - ./docker/logstash/logstash.conf:/usr/share/logstash/pipeline/logstash.conf:ro
+    ports:
+      - "12201:12201/udp"
+    depends_on:
+      - elasticsearch
+    networks:
+      - banking-net
+
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.13.4
+    environment:
+      ELASTICSEARCH_HOSTS: http://elasticsearch:9200
+    ports:
+      - "5601:5601"
+    depends_on:
+      - elasticsearch
+    networks:
+      - banking-net
+
+  # Everything below redefines an app service that already exists in
+  # docker-compose.yml purely to add a `logging:` block — Compose merges
+  # this file with the base one rather than replacing each service outright.
+  config-server:
+    logging:
+      driver: gelf
+      options:
+        gelf-address: "udp://localhost:12201"
+        tag: "config-server"
+
+  discovery-server:
+    logging:
+      driver: gelf
+      options:
+        gelf-address: "udp://localhost:12201"
+        tag: "discovery-server"
+
+  api-gateway:
+    logging:
+      driver: gelf
+      options:
+        gelf-address: "udp://localhost:12201"
+        tag: "api-gateway"
+
+  authentication-service:
+    logging:
+      driver: gelf
+      options:
+        gelf-address: "udp://localhost:12201"
+        tag: "authentication-service"
+
+  user-service:
+    logging:
+      driver: gelf
+      options:
+        gelf-address: "udp://localhost:12201"
+        tag: "user-service"
+
+  account-service:
+    logging:
+      driver: gelf
+      options:
+        gelf-address: "udp://localhost:12201"
+        tag: "account-service"
+
+  transaction-service:
+    logging:
+      driver: gelf
+      options:
+        gelf-address: "udp://localhost:12201"
+        tag: "transaction-service"
+
+  notification-service:
+    logging:
+      driver: gelf
+      options:
+        gelf-address: "udp://localhost:12201"
+        tag: "notification-service"
+
+  loan-service:
+    logging:
+      driver: gelf
+      options:
+        gelf-address: "udp://localhost:12201"
+        tag: "loan-service"
+
+  audit-service:
+    logging:
+      driver: gelf
+      options:
+        gelf-address: "udp://localhost:12201"
+        tag: "audit-service"
+
+  fraud-detection-service:
+    logging:
+      driver: gelf
+      options:
+        gelf-address: "udp://localhost:12201"
+        tag: "fraud-detection-service"
+
+volumes:
+  elasticsearch-data:

@@ -1,0 +1,32 @@
+# Supply-chain hygiene: keep Maven dependencies, the GitHub Actions used
+# by ci.yml/codeql.yml, and the base/infra images pinned across this repo
+# from silently going stale. Purely declarative -- nothing here executes
+# anything, it only opens PRs for a human (or CI) to review.
+version: 2
+updates:
+  # Multi-module Maven reactor: Dependabot auto-discovers every module's
+  # pom.xml from this single root entry, no per-service entry needed.
+  - package-ecosystem: "maven"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+
+  # Base images referenced by the shared Dockerfile template (maven build
+  # stage, eclipse-temurin runtime stage).
+  - package-ecosystem: "docker"
+    directory: "/docker"
+    schedule:
+      interval: "weekly"
+
+  # Infra image tags pinned directly in docker-compose.yml (mysql, kafka,
+  # redis, zipkin, prometheus, grafana, mailhog).
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"

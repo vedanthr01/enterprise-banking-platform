@@ -1,0 +1,122 @@
+spring:
+  cloud:
+    gateway:
+      routes:
+        # Internal-only endpoints (debit/credit/compensate, contact lookup) must
+        # never be reachable through the public gateway, even though they're
+        # already independently protected by the internal API key — block them
+        # outright before they'd match the broader per-service routes below.
+        # order is set explicitly (rather than relying on YAML list position)
+        # so this always wins regardless of where routes get added later.
+        - id: block-internal-accounts
+          uri: forward:/fallback/blocked
+          predicates:
+            - Path=/api/v1/accounts/internal/**
+          order: -100
+
+        - id: block-internal-users
+          uri: forward:/fallback/blocked
+          predicates:
+            - Path=/api/v1/users/internal/**
+          order: -100
+
+        - id: authentication-service
+          uri: lb://authentication-service
+          predicates:
+            - Path=/api/v1/auth/**
+          filters:
+            - StripPrefix=2
+
+        - id: user-service
+          uri: lb://user-service
+          predicates:
+            - Path=/api/v1/users/**
+          filters:
+            - StripPrefix=2
+            - name: RequestRateLimiter
+              args:
+                redis-rate-limiter.replenishRate: 20
+                redis-rate-limiter.burstCapacity: 40
+                key-resolver: "#{@userKeyResolver}"
+
+        - id: account-service
+          uri: lb://account-service
+          predicates:
+            - Path=/api/v1/accounts/**
+          filters:
+            - StripPrefix=2
+            - name: CircuitBreaker
+              args:
+                name: accountServiceCB
+                fallbackUri: forward:/fallback/account-service
+            - name: RequestRateLimiter
+              args:
+                redis-rate-limiter.replenishRate: 20
+                redis-rate-limiter.burstCapacity: 40
+                key-resolver: "#{@userKeyResolver}"
+
+        - id: transaction-service
+          uri: lb://transaction-service
+          predicates:
+            - Path=/api/v1/transactions/**
+          filters:
+            - StripPrefix=2
+            - name: CircuitBreaker
+              args:
+                name: transactionServiceCB
+                fallbackUri: forward:/fallback/transaction-service
+            - name: RequestRateLimiter
+              args:
+                redis-rate-limiter.replenishRate: 10
+                redis-rate-limiter.burstCapacity: 20
+                key-resolver: "#{@userKeyResolver}"
+
+        - id: notification-service
+          uri: lb://notification-service
+          predicates:
+            - Path=/api/v1/notifications/**
+          filters:
+            - StripPrefix=2
+
+        - id: loan-service
+          uri: lb://loan-service
+          predicates:
+            - Path=/api/v1/loans/**
+          filters:
+            - StripPrefix=2
+            - name: CircuitBreaker
+              args:
+                name: loanServiceCB
+                fallbackUri: forward:/fallback/loan-service
+
+        - id: audit-service
+          uri: lb://audit-service
+          predicates:
+            - Path=/api/v1/audit/**
+          filters:
+            - StripPrefix=2
+
+        - id: fraud-detection-service
+          uri: lb://fraud-detection-service
+          predicates:
+            - Path=/api/v1/fraud/**
+          filters:
+            - StripPrefix=2
+
+      globalcors:
+        cors-configurations:
+          '[/**]':
+            allowedOriginPatterns: "*"
+            allowedMethods: [GET, POST, PUT, PATCH, DELETE, OPTIONS]
+            allowedHeaders: "*"
+            allowCredentials: true
+
+resilience4j:
+  circuitbreaker:
+    instances:
+      accountServiceCB:
+        baseConfig: default
+      transactionServiceCB:
+        baseConfig: default
+      loanServiceCB:
+        baseConfig: default

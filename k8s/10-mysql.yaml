@@ -1,0 +1,92 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: mysql-pvc
+  namespace: banking-platform
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mysql-init-config
+  namespace: banking-platform
+data:
+  01-create-app-user.sql: |
+    CREATE USER IF NOT EXISTS 'banking_app'@'%' IDENTIFIED BY 'banking_app_pw';
+    GRANT ALL PRIVILEGES ON *.* TO 'banking_app'@'%';
+    FLUSH PRIVILEGES;
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mysql
+  namespace: banking-platform
+spec:
+  replicas: 1
+  # RollingUpdate would try to start a second pod against the same
+  # ReadWriteOnce PVC before the first terminates, and fail to mount it —
+  # Recreate tears the old pod down first. Fine for a single-instance dev
+  # database; a real deployment would use a managed database service
+  # instead of running MySQL in the cluster at all.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: mysql
+  template:
+    metadata:
+      labels:
+        app: mysql
+    spec:
+      containers:
+        - name: mysql
+          image: mysql:8.0
+          ports:
+            - containerPort: 3306
+          env:
+            - name: MYSQL_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: MYSQL_ROOT_PASSWORD
+          volumeMounts:
+            - name: mysql-data
+              mountPath: /var/lib/mysql
+            - name: mysql-init
+              mountPath: /docker-entrypoint-initdb.d
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "512Mi"
+            limits:
+              cpu: "1"
+              memory: "1Gi"
+          readinessProbe:
+            exec:
+              command: ["mysqladmin", "ping", "-h", "localhost"]
+            initialDelaySeconds: 20
+            periodSeconds: 10
+      volumes:
+        - name: mysql-data
+          persistentVolumeClaim:
+            claimName: mysql-pvc
+        - name: mysql-init
+          configMap:
+            name: mysql-init-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mysql
+  namespace: banking-platform
+spec:
+  selector:
+    app: mysql
+  ports:
+    - port: 3306
+      targetPort: 3306

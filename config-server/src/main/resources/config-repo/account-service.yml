@@ -1,0 +1,13 @@
+# Account Service-specific overrides on top of the shared application.yml.
+resilience4j:
+  circuitbreaker:
+    instances:
+      userServiceCB:
+        baseConfig: default
+        # A KYC_NOT_VERIFIED rejection is a normal business outcome decided
+        # locally after a successful remote call, not a User Service health
+        # signal — excluded so a burst of legitimately-unverified applicants
+        # can't trip the breaker and start misreporting OTHER users' checks
+        # as "service unavailable" instead of "not verified".
+        ignoreExceptions:
+          - com.bankingplatform.common.exception.BusinessException

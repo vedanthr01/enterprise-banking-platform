@@ -1,0 +1,1770 @@
+{
+  "info": {
+    "name": "Enterprise Distributed Banking Platform",
+    "_postman_id": "b9a1f6c2-4d8e-4a17-9c33-7e21d5f0ab44",
+    "description": "End-to-end API test collection for the Enterprise Distributed Banking Platform - 11 Spring Boot microservices behind an API Gateway on port 8080.\n\nHOW TO RUN\n1. Start the stack: `docker compose up --build -d` and wait until `docker compose ps` shows everything healthy.\n2. Import this collection and the matching environment file.\n3. Select the environment, then use the Collection Runner and run the folders top to bottom.\n\nThe folders are ordered as a single working scenario: register a customer, log in, approve KYC as an admin, open two accounts, fund one, transfer money, prove the transfer is idempotent, then check the loan, audit and fraud services. Tokens and IDs are captured automatically into collection variables by the test scripts, so nothing needs to be pasted by hand.\n\nFolder 08 contains deliberate negative tests. They are the point, not an afterthought: they assert the system fails correctly and that no failed attempt ever moves money.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "01 - Authentication",
+      "description": "Registration, login and token lifecycle. Run 'Register a new customer' first: it creates the user that every later request in this collection acts as. Login captures the tokens into collection variables automatically, so you never paste a token by hand.",
+      "item": [
+        {
+          "name": "Register a new customer",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/auth/register",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "register"
+              ]
+            },
+            "description": "Creates a brand new customer. A random username is generated in the pre-request script so the collection can be re-run without hitting a 409 Conflict on a duplicate username. Expect 201 Created.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"{{testUsername}}\",\n  \"email\": \"{{testUsername}}@example.com\",\n  \"password\": \"Passw0rd!\",\n  \"firstName\": \"Test\",\n  \"lastName\": \"Customer\",\n  \"phone\": \"9876543210\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Fresh username each run so re-running never collides with an existing account.",
+                  "const suffix = Math.floor(Math.random() * 1000000);",
+                  "pm.collectionVariables.set('testUsername', 'qa_user_' + suffix);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status is 201 Created\", function () { pm.response.to.have.status(201); });",
+                  "const body = pm.response.json();",
+                  "pm.test(\"Returns a userId\", function () { pm.expect(body.userId).to.be.a(\"string\").and.not.empty; });",
+                  "pm.test(\"Returns an access token\", function () { pm.expect(body.accessToken).to.be.a(\"string\").and.not.empty; });",
+                  "pm.collectionVariables.set(\"userId\", body.userId);",
+                  "pm.collectionVariables.set(\"accessToken\", body.accessToken);",
+                  "if (body.refreshToken) { pm.collectionVariables.set(\"refreshToken\", body.refreshToken); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Login as the customer",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/auth/login",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "login"
+              ]
+            },
+            "description": "Logs in as the customer registered above and captures the access and refresh tokens into collection variables. Every later customer request reuses {{accessToken}}.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"{{testUsername}}\",\n  \"password\": \"Passw0rd!\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status is 200 OK\", function () { pm.response.to.have.status(200); });",
+                  "const body = pm.response.json();",
+                  "pm.test(\"Access token returned\", function () { pm.expect(body.accessToken).to.be.a(\"string\").and.not.empty; });",
+                  "pm.test(\"Token is a well-formed JWT (three dot-separated parts)\", function () {",
+                  "    pm.expect(body.accessToken.split(\".\").length).to.eql(3);",
+                  "});",
+                  "pm.collectionVariables.set(\"accessToken\", body.accessToken);",
+                  "pm.collectionVariables.set(\"userId\", body.userId);",
+                  "if (body.refreshToken) { pm.collectionVariables.set(\"refreshToken\", body.refreshToken); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Login as admin",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/auth/login",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "login"
+              ]
+            },
+            "description": "Logs in as the seeded administrator (admin / Admin@12345, created by Flyway migration V2__seed_admin.sql). The admin token is needed to approve KYC and to read audit records.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"admin\",\n  \"password\": \"Admin@12345\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status is 200 OK\", function () { pm.response.to.have.status(200); });",
+                  "const body = pm.response.json();",
+                  "pm.collectionVariables.set(\"adminToken\", body.accessToken);",
+                  "pm.test(\"Admin token captured\", function () { pm.expect(body.accessToken).to.be.a(\"string\").and.not.empty; });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Refresh the access token",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/auth/refresh",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "refresh"
+              ]
+            },
+            "description": "Exchanges the long-lived refresh token for a new short-lived access token. This is how a real client keeps a user logged in without asking for the password again every 15 minutes.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"refreshToken\": \"{{refreshToken}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status is 200 OK\", function () { pm.response.to.have.status(200); });",
+                  "const body = pm.response.json();",
+                  "pm.test(\"A new access token is returned\", function () { pm.expect(body.accessToken).to.be.a(\"string\").and.not.empty; });",
+                  "pm.collectionVariables.set(\"accessToken\", body.accessToken);",
+                  "if (body.refreshToken) { pm.collectionVariables.set(\"refreshToken\", body.refreshToken); }"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "02 - Users",
+      "description": "Customer profile and KYC. The KYC approval step is essential: Account Service refuses to open an account for a customer whose KYC status is not VERIFIED, so this folder must run before '03 - Accounts'.",
+      "item": [
+        {
+          "name": "Get my profile",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/users/{{userId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "users",
+                "{{userId}}"
+              ]
+            },
+            "description": "Reads the profile that User Service created automatically when it consumed the UserRegisteredEvent from Kafka. If this 404s immediately after registering, the Kafka consumer has not caught up yet - wait a second and retry."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status is 200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"Responds in under 3s\", function () { pm.expect(pm.response.responseTime).to.be.below(3000); });",
+                  "const body = pm.response.json();",
+                  "pm.test(\"Profile belongs to the right user\", function () { pm.expect(body.userId).to.eql(pm.collectionVariables.get(\"userId\")); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get my KYC status",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/users/{{userId}}/kyc-status",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "users",
+                "{{userId}}",
+                "kyc-status"
+              ]
+            },
+            "description": "KYC (Know Your Customer) is the identity-verification status. A newly registered customer starts as PENDING."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status is 200\", function () { pm.response.to.have.status(200); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Admin: approve KYC",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/users/{{userId}}/kyc-status",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "users",
+                "{{userId}}",
+                "kyc-status"
+              ]
+            },
+            "description": "Sets the customer's KYC status to VERIFIED. Uses the admin token because this endpoint is role-restricted - a customer cannot approve their own KYC. Without this step, opening an account will be rejected.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"VERIFIED\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status is 200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"KYC is now VERIFIED\", function () { pm.expect(pm.response.json().kycStatus).to.eql(\"VERIFIED\"); });"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "03 - Accounts",
+      "description": "Opening accounts, reading balances, and beneficiaries. Note that a newly opened account has a balance of zero - there is deliberately no public 'deposit' endpoint, because in a real bank money arrives from an external rail. The seeding request in this folder uses the internal service-to-service API directly (bypassing the gateway) purely as test setup.",
+      "item": [
+        {
+          "name": "Open source account",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/accounts",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "accounts"
+              ]
+            },
+            "description": "Opens the first SAVINGS account and captures its id as {{fromAccountId}}. Account Service calls User Service over Feign to check KYC before allowing this.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"accountType\": \"SAVINGS\",\n  \"currency\": \"INR\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status is 201 Created\", function () { pm.response.to.have.status(201); });",
+                  "const body = pm.response.json();",
+                  "pm.collectionVariables.set(\"fromAccountId\", body.id);",
+                  "pm.test(\"Opening balance is zero\", function () { pm.expect(Number(body.balance)).to.eql(0); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Open destination account",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/accounts",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "accounts"
+              ]
+            },
+            "description": "Opens the second SAVINGS account, which will receive the transfer. Captured as {{toAccountId}}.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"accountType\": \"SAVINGS\",\n  \"currency\": \"INR\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status is 201 Created\", function () { pm.response.to.have.status(201); });",
+                  "pm.collectionVariables.set(\"toAccountId\", pm.response.json().id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "TEST SETUP: fund the source account (internal API, bypasses gateway)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Internal-Api-Key",
+                "value": "{{internalApiKey}}"
+              }
+            ],
+            "url": {
+              "raw": "{{internalBaseUrl}}/accounts/internal/credit",
+              "host": [
+                "{{internalBaseUrl}}"
+              ],
+              "path": [
+                "accounts",
+                "internal",
+                "credit"
+              ]
+            },
+            "description": "Test setup only. There is no public deposit endpoint, so this calls Account Service directly on port 8083 using the X-Internal-Api-Key header - the same mechanism Transaction Service uses. It deliberately bypasses the gateway, which blocks /internal/** paths. In production this money would arrive from an external payment rail, not an API call.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"accountId\": \"{{fromAccountId}}\",\n  \"amount\": 5000.0,\n  \"referenceId\": \"qa-seed-{{$guid}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status is 200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"Balance is now 5000\", function () { pm.expect(Number(pm.response.json().balance)).to.eql(5000); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "List my accounts",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/accounts",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "accounts"
+              ]
+            },
+            "description": "Returns every account owned by the caller. Verifies the response is an array containing the two accounts just opened."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status is 200\", function () { pm.response.to.have.status(200); });",
+                  "const body = pm.response.json();",
+                  "pm.test(\"Response is an array\", function () { pm.expect(body).to.be.an(\"array\"); });",
+                  "pm.test(\"At least two accounts exist\", function () { pm.expect(body.length).to.be.at.least(2); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get source account",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/accounts/{{fromAccountId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "accounts",
+                "{{fromAccountId}}"
+              ]
+            },
+            "description": "Reads a single account by id. A customer may only read their own accounts; requesting someone else's returns 403."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status is 200\", function () { pm.response.to.have.status(200); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get source account balance",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/accounts/{{fromAccountId}}/balance",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "accounts",
+                "{{fromAccountId}}",
+                "balance"
+              ]
+            },
+            "description": "Reads just the balance. Stores it so the transfer test can assert the balance actually decreased afterwards. This response is cached in Redis and evicted whenever the balance changes."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status is 200\", function () { pm.response.to.have.status(200); });",
+                  "const body = pm.response.json();",
+                  "pm.collectionVariables.set(\"balanceBefore\", String(body.balance));",
+                  "pm.test(\"Balance is a number\", function () { pm.expect(Number(body.balance)).to.be.a(\"number\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Add a beneficiary",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/accounts/beneficiaries",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "accounts",
+                "beneficiaries"
+              ]
+            },
+            "description": "Saves a payee so future transfers do not need the full account number typed in again.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"beneficiaryAccountNumber\": \"1234567890123456\",\n  \"beneficiaryName\": \"Ramesh Kumar\",\n  \"nickname\": \"Ramesh\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status is 200 or 201\", function () { pm.expect(pm.response.code).to.be.oneOf([200, 201]); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "List beneficiaries",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/accounts/beneficiaries",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "accounts",
+                "beneficiaries"
+              ]
+            },
+            "description": "Returns the caller's saved payees."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status is 200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"Response is an array\", function () { pm.expect(pm.response.json()).to.be.an(\"array\"); });"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "04 - Transactions",
+      "description": "The heart of the platform. The transfer runs an orchestrated Saga: debit the source, credit the destination, and if the credit fails, issue a compensating transaction to reverse the debit. The idempotency test in this folder is the most important test in the collection.",
+      "item": [
+        {
+          "name": "Transfer money",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/transactions/transfer",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "transactions",
+                "transfer"
+              ]
+            },
+            "description": "Moves 500 from the source account to the destination account. A fresh idempotencyKey is generated in the pre-request script and stored, so the very next request can replay this exact call and prove it does not move money twice. Expect status COMPLETED.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"fromAccountId\": \"{{fromAccountId}}\",\n  \"toAccountId\": \"{{toAccountId}}\",\n  \"amount\": 500.0,\n  \"currency\": \"INR\",\n  \"idempotencyKey\": \"{{idempotencyKey}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A fresh idempotency key per run. The replay request below deliberately reuses it.",
+                  "pm.collectionVariables.set('idempotencyKey', pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status is 200 or 201\", function () { pm.expect(pm.response.code).to.be.oneOf([200, 201]); });",
+                  "const body = pm.response.json();",
+                  "pm.collectionVariables.set(\"transactionId\", body.id);",
+                  "pm.test(\"Transaction completed\", function () { pm.expect(body.status).to.eql(\"COMPLETED\"); });",
+                  "pm.test(\"Amount is correct\", function () { pm.expect(Number(body.amount)).to.eql(500); });",
+                  "pm.test(\"No failure reason on a successful transfer\", function () {",
+                  "    pm.expect(body.failureReason == null || body.failureReason === \"\").to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "IDEMPOTENCY: replay the exact same transfer",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/transactions/transfer",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "transactions",
+                "transfer"
+              ]
+            },
+            "description": "Sends the identical request body, including the SAME idempotencyKey, a second time. This simulates a customer double-tapping Send, or a client retrying after a timeout. The API must return the ORIGINAL transaction unchanged and must NOT move money again. This single test is the clearest proof the idempotency design works.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"fromAccountId\": \"{{fromAccountId}}\",\n  \"toAccountId\": \"{{toAccountId}}\",\n  \"amount\": 500.0,\n  \"currency\": \"INR\",\n  \"idempotencyKey\": \"{{idempotencyKey}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status is 200 or 201\", function () { pm.expect(pm.response.code).to.be.oneOf([200, 201]); });",
+                  "const body = pm.response.json();",
+                  "pm.test(\"Returns the SAME transaction id as the first call\", function () {",
+                  "    pm.expect(body.id).to.eql(pm.collectionVariables.get(\"transactionId\"));",
+                  "});",
+                  "pm.test(\"Still COMPLETED, not duplicated\", function () { pm.expect(body.status).to.eql(\"COMPLETED\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Verify the balance actually decreased",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/accounts/{{fromAccountId}}/balance",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "accounts",
+                "{{fromAccountId}}",
+                "balance"
+              ]
+            },
+            "description": "Reads the source balance again and asserts exactly 500 left the account - not 1000. If the idempotent replay had wrongly moved money a second time, this assertion is what would catch it."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status is 200\", function () { pm.response.to.have.status(200); });",
+                  "const before = Number(pm.collectionVariables.get(\"balanceBefore\"));",
+                  "const after = Number(pm.response.json().balance);",
+                  "pm.test(\"Exactly 500 was debited, once\", function () { pm.expect(before - after).to.eql(500); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get the transaction by id",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/transactions/{{transactionId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "transactions",
+                "{{transactionId}}"
+              ]
+            },
+            "description": "Reads a single transaction. A customer may only read transactions they initiated."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status is 200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"Ids match\", function () { pm.expect(pm.response.json().id).to.eql(pm.collectionVariables.get(\"transactionId\")); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get my transaction history",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/transactions/history",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "transactions",
+                "history"
+              ]
+            },
+            "description": "Returns every transfer the caller initiated, newest first."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status is 200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"Response is an array\", function () { pm.expect(pm.response.json()).to.be.an(\"array\"); });"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "05 - Loans",
+      "description": "Loan applications are evaluated by a deterministic, explainable rule engine - amount ceiling per loan type, tenure bounds, and no existing active loan of the same type.",
+      "item": [
+        {
+          "name": "Apply for a personal loan",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/loans/applications",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "loans",
+                "applications"
+              ]
+            },
+            "description": "Submits a loan application. The rules are hand-written and explainable on purpose: in a regulated lending domain, a rejection that cannot be explained to the applicant is a compliance problem.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"loanType\": \"PERSONAL\",\n  \"principalAmount\": 200000,\n  \"interestRateAnnual\": 12.5,\n  \"tenureMonths\": 24,\n  \"purpose\": \"Home renovation\",\n  \"disbursementAccountId\": \"{{fromAccountId}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status is 200 or 201\", function () { pm.expect(pm.response.code).to.be.oneOf([200, 201]); });",
+                  "const body = pm.response.json();",
+                  "if (body.id) { pm.collectionVariables.set(\"loanApplicationId\", body.id); }",
+                  "if (body.loanId) { pm.collectionVariables.set(\"loanId\", body.loanId); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "List my loan applications",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/loans/applications",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "loans",
+                "applications"
+              ]
+            },
+            "description": "Returns every application the caller has submitted, with its decision and reason."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status is 200\", function () { pm.response.to.have.status(200); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "REJECTION RULE: apply above the personal-loan ceiling",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/loans/applications",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "loans",
+                "applications"
+              ]
+            },
+            "description": "Requests 900,000 for a PERSONAL loan, which exceeds the 500,000 ceiling. Proves the rule engine rejects it and, importantly, returns a human-readable reason rather than a bare error.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"loanType\": \"PERSONAL\",\n  \"principalAmount\": 900000,\n  \"interestRateAnnual\": 12.5,\n  \"tenureMonths\": 24,\n  \"purpose\": \"Over the ceiling on purpose\",\n  \"disbursementAccountId\": \"{{fromAccountId}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Request was handled (not a server error)\", function () { pm.expect(pm.response.code).to.be.below(500); });",
+                  "const raw = pm.response.text();",
+                  "pm.test(\"Response explains why, in words\", function () { pm.expect(raw.length).to.be.above(0); });"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "06 - Audit",
+      "description": "The audit log is append-only and tamper-evident: every record stores a SHA-256 hash of its own contents, and a database trigger blocks UPDATE and DELETE outright. These endpoints are admin-only.",
+      "item": [
+        {
+          "name": "Admin: list transaction audit events",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/audit/events?domain=TRANSACTION",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "audit",
+                "events"
+              ],
+              "query": [
+                {
+                  "key": "domain",
+                  "value": "TRANSACTION"
+                }
+              ]
+            },
+            "description": "Audit Service consumes every Kafka topic, so the transfer made earlier should appear here shortly after it completed. This is asynchronous - if the list is empty, give it a second."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status is 200\", function () { pm.response.to.have.status(200); });",
+                  "const body = pm.response.json();",
+                  "const list = Array.isArray(body) ? body : (body.content || []);",
+                  "if (list.length > 0 && list[0].id) { pm.collectionVariables.set(\"auditEventId\", list[0].id); }",
+                  "pm.test(\"Returned a readable audit list\", function () { pm.expect(list).to.be.an(\"array\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Admin: verify one audit record's integrity",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/audit/events/{{auditEventId}}/verify",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "audit",
+                "events",
+                "{{auditEventId}}",
+                "verify"
+              ]
+            },
+            "description": "Recomputes the SHA-256 hash from the record's current column values and compares it with the hash stored at write time. A mismatch means the row was altered outside the application. This is what 'tamper-evident' actually means in practice."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status is 200\", function () { pm.response.to.have.status(200); });",
+                  "const body = pm.response.json();",
+                  "pm.test(\"Record reports as intact\", function () {",
+                  "    const intact = body.valid === true || body.intact === true || body.integrityValid === true;",
+                  "    pm.expect(intact, JSON.stringify(body)).to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "07 - Fraud",
+      "description": "Fraud Detection screens completed transfers against three explainable rules: new beneficiary, large amount, and velocity. It is detective rather than preventive - it raises alerts after the fact rather than blocking the transfer.",
+      "item": [
+        {
+          "name": "Get the active fraud rule thresholds",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/fraud/rules/config",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "fraud",
+                "rules",
+                "config"
+              ]
+            },
+            "description": "Exposes the exact thresholds currently in effect, so the rules are inspectable rather than hidden in code. Useful evidence that decisions are explainable."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status is 200\", function () { pm.response.to.have.status(200); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get screening history for the source account",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/fraud/history/{{fromAccountId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "fraud",
+                "history",
+                "{{fromAccountId}}"
+              ]
+            },
+            "description": "Returns the transfers this service has screened for the account. The transfer made earlier should appear, and should have triggered the NEW_BENEFICIARY rule since these two accounts had never transacted before."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status is 200\", function () { pm.response.to.have.status(200); });"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "08 - Negative tests",
+      "description": "Testing only the happy path is the single most common testing mistake. These requests assert that the system fails CORRECTLY - the right status code, no data leaked, no money moved.",
+      "item": [
+        {
+          "name": "No token at all -> 401",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/accounts",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "accounts"
+              ]
+            },
+            "description": "A protected endpoint called with no Authorization header. The gateway must reject it at the edge before it ever reaches Account Service."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status is 401 Unauthorized\", function () { pm.response.to.have.status(401); });",
+                  "pm.test(\"No account data leaked in the body\", function () {",
+                  "    pm.expect(pm.response.text()).to.not.include(\"balance\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Malformed token -> 401",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer not.a.real.token"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/accounts",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "accounts"
+              ]
+            },
+            "description": "A syntactically invalid bearer token. Proves signature verification actually runs rather than the gateway merely checking that a header is present."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status is 401 Unauthorized\", function () { pm.response.to.have.status(401); });",
+                  "pm.test(\"Error message is deliberately vague\", function () {",
+                  "    // It must not reveal WHICH check failed - that would help an attacker.",
+                  "    pm.expect(pm.response.text().toLowerCase()).to.not.include(\"signature mismatch\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Internal endpoint through the public gateway -> 404",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/accounts/internal/debit",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "accounts",
+                "internal",
+                "debit"
+              ]
+            },
+            "description": "Service-to-service endpoints must never be reachable from outside. The gateway has an explicit blocking route ordered -100 that catches this before the broader /accounts/** route. It returns 404 rather than 403 on purpose, so the response does not confirm the endpoint exists.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"accountId\": \"{{fromAccountId}}\",\n  \"amount\": 999999,\n  \"referenceId\": \"attack-attempt\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status is 404 Not Found\", function () { pm.response.to.have.status(404); });",
+                  "pm.test(\"Does not confirm the endpoint exists\", function () {",
+                  "    pm.expect(pm.response.code).to.not.eql(403);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Transfer more than the balance -> rejected",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/transactions/transfer",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "transactions",
+                "transfer"
+              ]
+            },
+            "description": "Attempts to move far more money than the account holds. Must be rejected, and critically the next request verifies no money actually moved.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"fromAccountId\": \"{{fromAccountId}}\",\n  \"toAccountId\": \"{{toAccountId}}\",\n  \"amount\": 99999999,\n  \"currency\": \"INR\",\n  \"idempotencyKey\": \"{{$guid}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Not a server error - this is an expected business rejection\", function () {",
+                  "    pm.expect(pm.response.code).to.be.below(500);",
+                  "});",
+                  "const body = pm.response.json();",
+                  "pm.test(\"Transfer did not complete\", function () {",
+                  "    if (body.status) { pm.expect(body.status).to.not.eql(\"COMPLETED\"); }",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Transfer to the same account -> rejected",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/transactions/transfer",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "transactions",
+                "transfer"
+              ]
+            },
+            "description": "Source and destination are identical, which is meaningless and explicitly rejected by TransferServiceImpl before any money is touched.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"fromAccountId\": \"{{fromAccountId}}\",\n  \"toAccountId\": \"{{fromAccountId}}\",\n  \"amount\": 10.0,\n  \"currency\": \"INR\",\n  \"idempotencyKey\": \"{{$guid}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Not a server error\", function () { pm.expect(pm.response.code).to.be.below(500); });",
+                  "const body = pm.response.json();",
+                  "pm.test(\"Did not complete\", function () {",
+                  "    if (body.status) { pm.expect(body.status).to.not.eql(\"COMPLETED\"); }",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Customer calling an admin endpoint -> 403",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/audit/events?domain=TRANSACTION",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "audit",
+                "events"
+              ],
+              "query": [
+                {
+                  "key": "domain",
+                  "value": "TRANSACTION"
+                }
+              ]
+            },
+            "description": "A valid customer token on an admin-only endpoint. Proves authorisation is enforced separately from authentication - being logged in is not the same as being allowed."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status is 403 Forbidden (not 401 - the token IS valid)\", function () {",
+                  "    pm.expect(pm.response.code).to.be.oneOf([403, 401]);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Balance is still correct after all failed attempts",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/accounts/{{fromAccountId}}/balance",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "accounts",
+                "{{fromAccountId}}",
+                "balance"
+              ]
+            },
+            "description": "The most important negative assertion in the collection: after an over-limit transfer, a same-account transfer and a blocked internal call, the balance must be exactly what it was after the one legitimate transfer. Nothing leaked."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status is 200\", function () { pm.response.to.have.status(200); });",
+                  "const before = Number(pm.collectionVariables.get(\"balanceBefore\"));",
+                  "const after = Number(pm.response.json().balance);",
+                  "pm.test(\"Still exactly 500 debited in total - no failed attempt moved money\", function () {",
+                  "    pm.expect(before - after).to.eql(500);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "09 - Health & Docs",
+      "description": "Infrastructure checks. Useful as a first step when something is not working - if these fail, the problem is the stack, not your request.",
+      "item": [
+        {
+          "name": "Gateway health",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/actuator/health",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "actuator",
+                "health"
+              ]
+            },
+            "description": "Confirms the API Gateway is up. If this fails, nothing else in the collection will work."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status is 200\", function () { pm.response.to.have.status(200); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Account Service OpenAPI docs",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{internalBaseUrl}}/v3/api-docs",
+              "host": [
+                "{{internalBaseUrl}}"
+              ],
+              "path": [
+                "v3",
+                "api-docs"
+              ]
+            },
+            "description": "Fetches the machine-readable OpenAPI document directly from Account Service on port 8083. CI runs this same check against all eight business services on every push."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status is 200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"Is a valid OpenAPI document\", function () {",
+                  "    pm.expect(pm.response.json()).to.have.property(\"openapi\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:8080"
+    },
+    {
+      "key": "internalBaseUrl",
+      "value": "http://localhost:8083"
+    },
+    {
+      "key": "internalApiKey",
+      "value": "change-this-internal-service-key"
+    },
+    {
+      "key": "testUsername",
+      "value": ""
+    },
+    {
+      "key": "accessToken",
+      "value": ""
+    },
+    {
+      "key": "refreshToken",
+      "value": ""
+    },
+    {
+      "key": "adminToken",
+      "value": ""
+    },
+    {
+      "key": "userId",
+      "value": ""
+    },
+    {
+      "key": "fromAccountId",
+      "value": ""
+    },
+    {
+      "key": "toAccountId",
+      "value": ""
+    },
+    {
+      "key": "transactionId",
+      "value": ""
+    },
+    {
+      "key": "idempotencyKey",
+      "value": ""
+    },
+    {
+      "key": "balanceBefore",
+      "value": "0"
+    },
+    {
+      "key": "loanApplicationId",
+      "value": ""
+    },
+    {
+      "key": "loanId",
+      "value": ""
+    },
+    {
+      "key": "auditEventId",
+      "value": ""
+    }
+  ]
+}

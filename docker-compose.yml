@@ -1,0 +1,464 @@
+# Enterprise Distributed Banking Transaction Platform — local dev/demo stack.
+#
+# No top-level `version:` key on purpose: the Compose Specification (what
+# current `docker compose` implements) treats it as obsolete and ignores it;
+# omitting it avoids the deprecation warning older tutorials' compose files
+# still trigger.
+#
+# Quick start:
+#   docker compose up --build -d
+#   docker compose ps                     # wait for everything to report healthy
+#   open http://localhost:8761            # Eureka — confirm all 9 registered services are up
+#                                          # (config-server and discovery-server itself don't
+#                                          # register as Eureka clients, so 9 of the 11 total
+#                                          # services show up here — see ci.yml's smoke test)
+#   open http://localhost:8080            # API Gateway — the one public entry point
+#   open http://localhost:8025            # MailHog — see emails Notification Service sends
+#   open http://localhost:9411            # Zipkin — distributed traces
+#   open http://localhost:9090            # Prometheus — raw metrics/targets
+#   open http://localhost:3000            # Grafana (admin/admin) — dashboards over Prometheus
+#
+# First build compiles all 11 Spring Boot modules inside Docker (no local
+# Maven/JDK needed) — expect several minutes on the first `--build`; later
+# runs are fast unless a pom.xml or source file under a rebuilt service
+# changed. See README.md for the full walkthrough, including a sample
+# end-to-end curl flow (register -> login -> open account -> transfer).
+#
+# Optional ELK log aggregation is a separate overlay, not part of this file
+# on purpose (Elasticsearch's memory footprint and host tuning requirements
+# make it a poor default for a laptop dev stack) — see docker-compose.elk.yml.
+
+x-app-common-env: &app-common-env
+  CONFIG_SERVER_URI: http://config-server:8888
+  EUREKA_URI: http://discovery-server:8761/eureka
+  KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+  DB_HOST: mysql
+  DB_PORT: 3306
+  DB_USERNAME: banking_app
+  DB_PASSWORD: banking_app_pw
+  ZIPKIN_URI: http://zipkin:9411/api/v2/spans
+  JWT_SECRET: ${JWT_SECRET:-change-this-super-secret-banking-platform-signing-key-min-256-bits}
+  INTERNAL_API_KEY: ${INTERNAL_API_KEY:-change-this-internal-service-key}
+
+x-app-healthcheck: &app-healthcheck
+  interval: 15s
+  timeout: 5s
+  retries: 10
+  start_period: 30s
+
+networks:
+  banking-net:
+    driver: bridge
+
+volumes:
+  mysql-data:
+  prometheus-data:
+  grafana-data:
+
+services:
+  # ---------------------------------------------------------------------
+  # Infrastructure
+  # ---------------------------------------------------------------------
+
+  mysql:
+    image: mysql:8.0
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-rootpw}
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql-data:/var/lib/mysql
+      - ./docker/mysql-init:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MYSQL_ROOT_PASSWORD:-rootpw}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    networks:
+      - banking-net
+
+  # Single-node Kafka in KRaft mode — no separate Zookeeper container. Acts
+  # as both broker and controller, which is the standard, documented
+  # single-node KRaft setup and is more than sufficient for local dev.
+  kafka:
+    image: apache/kafka:3.7.0
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093,PLAINTEXT_HOST://:29092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      CLUSTER_ID: "MkU3OEVBNTcwNTJENDM2Qk"
+    ports:
+      - "29092:29092"
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+    networks:
+      - banking-net
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks:
+      - banking-net
+
+  zipkin:
+    image: openzipkin/zipkin:latest
+    ports:
+      - "9411:9411"
+    networks:
+      - banking-net
+
+  prometheus:
+    image: prom/prometheus:latest
+    volumes:
+      - ./docker/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "9090:9090"
+    networks:
+      - banking-net
+
+  grafana:
+    image: grafana/grafana:latest
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./docker/grafana/provisioning:/etc/grafana/provisioning:ro
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+    networks:
+      - banking-net
+
+  # Fake SMTP server + web UI — Notification Service's dev mail catcher, so
+  # emails it sends are visible without any real mail provider.
+  mailhog:
+    image: mailhog/mailhog:latest
+    ports:
+      - "1025:1025"
+      - "8025:8025"
+    networks:
+      - banking-net
+
+  # ---------------------------------------------------------------------
+  # Platform infrastructure services
+  # ---------------------------------------------------------------------
+
+  config-server:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.service
+      args:
+        MODULE: config-server
+        SERVICE_PORT: 8888
+    ports:
+      - "8888:8888"
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8888/actuator/health"]
+      <<: *app-healthcheck
+    networks:
+      - banking-net
+
+  discovery-server:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.service
+      args:
+        MODULE: discovery-server
+        SERVICE_PORT: 8761
+    environment:
+      EUREKA_HOSTNAME: discovery-server
+    ports:
+      - "8761:8761"
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8761/actuator/health"]
+      <<: *app-healthcheck
+    networks:
+      - banking-net
+
+  api-gateway:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.service
+      args:
+        MODULE: api-gateway
+        SERVICE_PORT: 8080
+    environment:
+      <<: *app-common-env
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/actuator/health"]
+      <<: *app-healthcheck
+    depends_on:
+      config-server:
+        condition: service_healthy
+      discovery-server:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - banking-net
+
+  # ---------------------------------------------------------------------
+  # Business services
+  # ---------------------------------------------------------------------
+
+  authentication-service:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.service
+      args:
+        MODULE: authentication-service
+        SERVICE_PORT: 8081
+    environment:
+      <<: *app-common-env
+      DB_NAME: auth_db
+      # Authentication Service writes access-token JTIs to a Redis
+      # blacklist on logout (see AuthServiceImpl#logout); API Gateway's
+      # JwtAuthenticationFilter reads the same "blacklist:jti:*" keys on
+      # every request. Without this, logout would silently no-op inside
+      # the container (Spring's default REDIS_HOST falls back to
+      # "localhost", which inside this container is itself, not Redis).
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+    ports:
+      - "8081:8081"
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8081/actuator/health"]
+      <<: *app-healthcheck
+    depends_on:
+      config-server:
+        condition: service_healthy
+      discovery-server:
+        condition: service_healthy
+      mysql:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - banking-net
+
+  user-service:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.service
+      args:
+        MODULE: user-service
+        SERVICE_PORT: 8082
+    environment:
+      <<: *app-common-env
+      DB_NAME: user_db
+    ports:
+      - "8082:8082"
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8082/actuator/health"]
+      <<: *app-healthcheck
+    depends_on:
+      config-server:
+        condition: service_healthy
+      discovery-server:
+        condition: service_healthy
+      mysql:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    networks:
+      - banking-net
+
+  account-service:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.service
+      args:
+        MODULE: account-service
+        SERVICE_PORT: 8083
+    environment:
+      <<: *app-common-env
+      DB_NAME: account_db
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+    ports:
+      - "8083:8083"
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8083/actuator/health"]
+      <<: *app-healthcheck
+    depends_on:
+      config-server:
+        condition: service_healthy
+      discovery-server:
+        condition: service_healthy
+      mysql:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - banking-net
+
+  transaction-service:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.service
+      args:
+        MODULE: transaction-service
+        SERVICE_PORT: 8084
+    environment:
+      <<: *app-common-env
+      DB_NAME: transaction_db
+    ports:
+      - "8084:8084"
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8084/actuator/health"]
+      <<: *app-healthcheck
+    depends_on:
+      config-server:
+        condition: service_healthy
+      discovery-server:
+        condition: service_healthy
+      mysql:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    networks:
+      - banking-net
+
+  notification-service:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.service
+      args:
+        MODULE: notification-service
+        SERVICE_PORT: 8085
+    environment:
+      <<: *app-common-env
+      DB_NAME: notification_db
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      MAIL_HOST: mailhog
+      MAIL_PORT: 1025
+    ports:
+      - "8085:8085"
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8085/actuator/health"]
+      <<: *app-healthcheck
+    depends_on:
+      config-server:
+        condition: service_healthy
+      discovery-server:
+        condition: service_healthy
+      mysql:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      mailhog:
+        condition: service_started
+    networks:
+      - banking-net
+
+  loan-service:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.service
+      args:
+        MODULE: loan-service
+        SERVICE_PORT: 8086
+    environment:
+      <<: *app-common-env
+      DB_NAME: loan_db
+    ports:
+      - "8086:8086"
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8086/actuator/health"]
+      <<: *app-healthcheck
+    depends_on:
+      config-server:
+        condition: service_healthy
+      discovery-server:
+        condition: service_healthy
+      mysql:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    networks:
+      - banking-net
+
+  audit-service:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.service
+      args:
+        MODULE: audit-service
+        SERVICE_PORT: 8087
+    environment:
+      <<: *app-common-env
+      DB_NAME: audit_db
+    ports:
+      - "8087:8087"
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8087/actuator/health"]
+      <<: *app-healthcheck
+    depends_on:
+      config-server:
+        condition: service_healthy
+      discovery-server:
+        condition: service_healthy
+      mysql:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    networks:
+      - banking-net
+
+  fraud-detection-service:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.service
+      args:
+        MODULE: fraud-detection-service
+        SERVICE_PORT: 8088
+    environment:
+      <<: *app-common-env
+      DB_NAME: fraud_db
+    ports:
+      - "8088:8088"
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8088/actuator/health"]
+      <<: *app-healthcheck
+    depends_on:
+      config-server:
+        condition: service_healthy
+      discovery-server:
+        condition: service_healthy
+      mysql:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    networks:
+      - banking-net

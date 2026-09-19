@@ -1,0 +1,108 @@
+# Same scrape targets as docker/prometheus/prometheus.yml, unchanged: every
+# service is addressed by its plain Kubernetes Service name, which
+# resolves the same way Docker Compose's service-name DNS does as long as
+# everything stays in this one namespace.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-config
+  namespace: banking-platform
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: 15s
+      evaluation_interval: 15s
+    scrape_configs:
+      - job_name: 'config-server'
+        metrics_path: '/actuator/prometheus'
+        static_configs:
+          - targets: ['config-server:8888']
+      - job_name: 'discovery-server'
+        metrics_path: '/actuator/prometheus'
+        static_configs:
+          - targets: ['discovery-server:8761']
+      - job_name: 'api-gateway'
+        metrics_path: '/actuator/prometheus'
+        static_configs:
+          - targets: ['api-gateway:8080']
+      - job_name: 'authentication-service'
+        metrics_path: '/actuator/prometheus'
+        static_configs:
+          - targets: ['authentication-service:8081']
+      - job_name: 'user-service'
+        metrics_path: '/actuator/prometheus'
+        static_configs:
+          - targets: ['user-service:8082']
+      - job_name: 'account-service'
+        metrics_path: '/actuator/prometheus'
+        static_configs:
+          - targets: ['account-service:8083']
+      - job_name: 'transaction-service'
+        metrics_path: '/actuator/prometheus'
+        static_configs:
+          - targets: ['transaction-service:8084']
+      - job_name: 'notification-service'
+        metrics_path: '/actuator/prometheus'
+        static_configs:
+          - targets: ['notification-service:8085']
+      - job_name: 'loan-service'
+        metrics_path: '/actuator/prometheus'
+        static_configs:
+          - targets: ['loan-service:8086']
+      - job_name: 'audit-service'
+        metrics_path: '/actuator/prometheus'
+        static_configs:
+          - targets: ['audit-service:8087']
+      - job_name: 'fraud-detection-service'
+        metrics_path: '/actuator/prometheus'
+        static_configs:
+          - targets: ['fraud-detection-service:8088']
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: prometheus
+  namespace: banking-platform
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: prometheus
+  template:
+    metadata:
+      labels:
+        app: prometheus
+    spec:
+      containers:
+        - name: prometheus
+          image: prom/prometheus:latest
+          args:
+            - "--config.file=/etc/prometheus/prometheus.yml"
+          ports:
+            - containerPort: 9090
+          volumeMounts:
+            - name: prometheus-config
+              mountPath: /etc/prometheus
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "512Mi"
+            limits:
+              cpu: "1"
+              memory: "1Gi"
+      volumes:
+        - name: prometheus-config
+          configMap:
+            name: prometheus-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus
+  namespace: banking-platform
+spec:
+  selector:
+    app: prometheus
+  ports:
+    - port: 9090
+      targetPort: 9090

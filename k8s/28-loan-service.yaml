@@ -1,0 +1,99 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: loan-service-config
+  namespace: banking-platform
+data:
+  CONFIG_SERVER_URI: "http://config-server:8888"
+  EUREKA_URI: "http://discovery-server:8761/eureka"
+  ZIPKIN_URI: "http://zipkin:9411/api/v2/spans"
+  DB_HOST: "mysql"
+  DB_PORT: "3306"
+  DB_NAME: "loan_db"
+  KAFKA_BOOTSTRAP_SERVERS: "kafka:9092"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: loan-service
+  namespace: banking-platform
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: loan-service
+  template:
+    metadata:
+      labels:
+        app: loan-service
+    spec:
+      initContainers:
+        - name: wait-for-mysql
+          image: busybox:1.36
+          command: ['sh', '-c', 'until nc -z -w2 mysql 3306; do echo waiting for mysql; sleep 3; done;']
+      containers:
+        - name: loan-service
+          image: banking-platform/loan-service:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8086
+          envFrom:
+            - configMapRef:
+                name: loan-service-config
+          env:
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: JWT_SECRET
+            - name: DB_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: DB_USERNAME
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: DB_PASSWORD
+            - name: INTERNAL_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: INTERNAL_API_KEY
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "512Mi"
+            limits:
+              cpu: "750m"
+              memory: "1Gi"
+          readinessProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: 8086
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: 8086
+            initialDelaySeconds: 60
+            periodSeconds: 15
+            timeoutSeconds: 3
+            failureThreshold: 5
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: loan-service
+  namespace: banking-platform
+spec:
+  type: ClusterIP
+  selector:
+    app: loan-service
+  ports:
+    - port: 8086
+      targetPort: 8086

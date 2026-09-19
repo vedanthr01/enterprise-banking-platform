@@ -1,0 +1,14 @@
+# Transaction Service-specific overrides on top of the shared application.yml.
+resilience4j:
+  circuitbreaker:
+    instances:
+      accountServiceCB:
+        baseConfig: default
+  retry:
+    instances:
+      accountServiceRetry:
+        baseConfig: default
+        retryExceptions:
+          - java.io.IOException
+          - feign.RetryableException
+          - java.util.concurrent.TimeoutException

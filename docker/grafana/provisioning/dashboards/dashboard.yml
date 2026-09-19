@@ -1,0 +1,19 @@
+apiVersion: 1
+
+# Auto-loads any dashboard JSON files dropped into this same directory —
+# none are checked in here. Fastest way to get a populated dashboard on
+# first run: open Grafana (http://localhost:3000, admin/admin), go to
+# Dashboards -> New -> Import, and load public dashboard ID 4701 ("JVM
+# (Micrometer)") or 11378 ("Spring Boot 2.1 System Monitor") against the
+# pre-provisioned Prometheus datasource — both are built for exactly this
+# Micrometer + Prometheus + Spring Boot Actuator combination this platform
+# already exposes on every service.
+providers:
+  - name: 'default'
+    orgId: 1
+    folder: ''
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    options:
+      path: /etc/grafana/provisioning/dashboards

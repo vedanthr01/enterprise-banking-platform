@@ -1,0 +1,176 @@
+name: CI
+
+# Runs on every push/PR to main, plus manual triggers. The two heaviest
+# jobs (docker-build and smoke-test-full-stack) are skipped on pull_request
+# events on purpose: a PR gets fast feedback from the build/test/manifest
+# checks, and the full image-build + docker-compose-up verification runs
+# once things actually land on main. Both jobs are still available on
+# demand via workflow_dispatch.
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # ---------------------------------------------------------------------
+  # Maven build across the whole reactor: common first, then every
+  # service, in dependency order, in one `mvn verify`. This is also where
+  # transaction-service's Testcontainers-backed TransferSagaIT runs:
+  # GitHub-hosted runners provide a Docker daemon, so the integration
+  # test starts real MySQL and Kafka containers rather than mocks.
+  # ---------------------------------------------------------------------
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      - name: Build and test (unit + Testcontainers integration)
+        run: mvn -B clean verify
+
+      - name: Upload surefire/failsafe reports on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports
+          path: |
+            **/target/surefire-reports/**
+            **/target/failsafe-reports/**
+          retention-days: 7
+
+  # ---------------------------------------------------------------------
+  # Structural validation of every pom.xml/yml/yaml in the repo (the same
+  # validate.py used throughout development) -- cheap, fast, and it's
+  # already caught real mistakes during development (a stray "--" inside
+  # an XML comment, more than once), so it earns its place in CI too.
+  # ---------------------------------------------------------------------
+  validate-infra-files:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - name: Install PyYAML
+        run: pip install pyyaml
+      - name: Validate pom.xml / yml / yaml well-formedness
+        run: python3 validate.py
+
+  # ---------------------------------------------------------------------
+  # Builds every service's real Docker image via the shared
+  # docker/Dockerfile.service template (build-only, no registry push --
+  # this project has no registry credentials configured, and proving the
+  # images build at all is the actual goal here). GitHub Actions' cache
+  # backend keeps repeat builds fast by reusing Maven/layer caches across
+  # runs.
+  # ---------------------------------------------------------------------
+  docker-build:
+    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request'
+    needs: build-and-test
+    strategy:
+      fail-fast: false
+      matrix:
+        service:
+          - { module: config-server,            port: 8888 }
+          - { module: discovery-server,         port: 8761 }
+          - { module: api-gateway,              port: 8080 }
+          - { module: authentication-service,   port: 8081 }
+          - { module: user-service,             port: 8082 }
+          - { module: account-service,          port: 8083 }
+          - { module: transaction-service,      port: 8084 }
+          - { module: notification-service,     port: 8085 }
+          - { module: loan-service,             port: 8086 }
+          - { module: audit-service,            port: 8087 }
+          - { module: fraud-detection-service,  port: 8088 }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build ${{ matrix.service.module }} image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: docker/Dockerfile.service
+          push: false
+          tags: banking-platform/${{ matrix.service.module }}:ci
+          build-args: |
+            MODULE=${{ matrix.service.module }}
+            SERVICE_PORT=${{ matrix.service.port }}
+          cache-from: type=gha,scope=${{ matrix.service.module }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.service.module }}
+
+  # ---------------------------------------------------------------------
+  # Server-side dry-run apply of every k8s/*.yaml against a real (if
+  # disposable) API server -- catches schema mistakes validate.py's plain
+  # YAML parsing can't (e.g. a typo'd field name, a probe pointed at a
+  # path the Deployment schema doesn't allow) without needing a persistent
+  # cluster of any kind.
+  # ---------------------------------------------------------------------
+  validate-k8s-manifests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create disposable kind cluster
+        uses: helm/kind-action@v1
+        with:
+          wait: 60s
+      # Filename order (00-namespace.yaml first) means the namespace every
+      # other manifest references already exists by the time this runs.
+      - name: Dry-run apply all manifests (server-side)
+        run: kubectl apply --dry-run=server -f k8s/
+
+  # ---------------------------------------------------------------------
+  # The one true end-to-end check: build every image for real, bring the
+  # whole docker-compose.yml stack up, and confirm Eureka sees every
+  # service register itself and that every business service serves a
+  # valid OpenAPI document. This is the closest thing this pipeline has
+  # to "does the product actually work" -- everything else here checks a
+  # slice of it in isolation.
+  # ---------------------------------------------------------------------
+  smoke-test-full-stack:
+    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request'
+    needs: build-and-test
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create .env from example
+        run: cp .env.example .env
+
+      - name: Build and start the full stack
+        run: docker compose up -d --build --wait --wait-timeout 600
+
+      - name: Verify every service registered with Eureka
+        run: |
+          curl -sf http://localhost:8761/eureka/apps -H "Accept: application/json" | tee eureka-apps.json
+          for svc in API-GATEWAY AUTHENTICATION-SERVICE USER-SERVICE ACCOUNT-SERVICE \
+                     TRANSACTION-SERVICE NOTIFICATION-SERVICE LOAN-SERVICE AUDIT-SERVICE \
+                     FRAUD-DETECTION-SERVICE; do
+            grep -q "$svc" eureka-apps.json || { echo "::error::$svc never registered with Eureka"; exit 1; }
+          done
+
+      - name: Verify every business service serves valid OpenAPI docs
+        run: |
+          for port in 8081 8082 8083 8084 8085 8086 8087 8088; do
+            echo "Checking /v3/api-docs on port $port"
+            curl -sf "http://localhost:$port/v3/api-docs" -o /dev/null
+          done
+
+      - name: Dump container logs on failure
+        if: failure()
+        run: docker compose logs --tail=300
+
+      - name: Tear down
+        if: always()
+        run: docker compose down -v

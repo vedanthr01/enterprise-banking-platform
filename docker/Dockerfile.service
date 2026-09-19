@@ -1,0 +1,32 @@
+# Shared multi-stage build template for every Spring Boot module in this
+# reactor. One Dockerfile, parameterized by build args, rather than eleven
+# near-identical copies — used from docker-compose.yml with a different
+# MODULE/SERVICE_PORT pair per service (see each <service>/Dockerfile for
+# the two-line "just set the args" wrapper build context expects).
+#
+# Build context MUST be the repository root (not the service subdirectory):
+# every module depends on the sibling "common" module via Maven's reactor,
+# not a published artifact, so the build stage needs the whole multi-module
+# source tree to resolve it. `mvn -pl <module> -am` then builds only that
+# module plus the reactor-internal dependencies it actually needs (common),
+# not all eleven services. docker-compose.yml references this one file
+# eleven times, once per service, each with its own build.args — no
+# per-service Dockerfile needed.
+FROM maven:3.9-eclipse-temurin-21 AS build
+ARG MODULE
+WORKDIR /workspace
+COPY . .
+RUN mvn -B -pl ${MODULE} -am -DskipTests clean package
+
+# Slim runtime image — only the built jar and a JRE make it into the final
+# image, not the Maven build toolchain or the full source tree.
+FROM eclipse-temurin:21-jre-alpine
+ARG MODULE
+ARG SERVICE_PORT
+WORKDIR /app
+RUN addgroup -S spring && adduser -S spring -G spring
+COPY --from=build /workspace/${MODULE}/target/*.jar /app/app.jar
+RUN chown spring:spring /app/app.jar
+USER spring
+EXPOSE ${SERVICE_PORT}
+ENTRYPOINT ["java", "-jar", "/app/app.jar"]
