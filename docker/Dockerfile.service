@@ -12,7 +12,7 @@
 # not all eleven services. docker-compose.yml references this one file
 # eleven times, once per service, each with its own build.args — no
 # per-service Dockerfile needed.
-FROM maven:3.9-eclipse-temurin-21 AS build
+FROM maven:3-eclipse-temurin-24 AS build
 ARG MODULE
 WORKDIR /workspace
 COPY . .
