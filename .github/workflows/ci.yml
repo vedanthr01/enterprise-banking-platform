@@ -96,7 +96,7 @@ jobs:
           - { module: fraud-detection-service,  port: 8088 }
     steps:
       - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
       - name: Build ${{ matrix.service.module }} image
         uses: docker/build-push-action@v5
         with:
