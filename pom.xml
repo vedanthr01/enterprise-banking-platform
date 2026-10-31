@@ -39,7 +39,7 @@
         <maven.compiler.source>21</maven.compiler.source>
         <maven.compiler.target>21</maven.compiler.target>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-        <spring-cloud.version>2023.0.1</spring-cloud.version>
+        <spring-cloud.version>2025.1.4</spring-cloud.version>
         <springdoc.version>2.5.0</springdoc.version>
         <resilience4j.version>2.2.0</resilience4j.version>
         <jjwt.version>0.12.5</jjwt.version>
